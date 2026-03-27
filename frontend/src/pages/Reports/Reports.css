@@ -1,0 +1,45 @@
+/* Shared db-* layout classes for stub pages */
+:root {
+  --nava-blue: #00328f;
+  --nava-azure: #007FFF;
+  --background-color: #f8fafc;
+  --border-color: #e2e8f0;
+  --text-primary: #2a2a27;
+  --text-secondary: #64748b;
+}
+.db-container { display: flex; min-height: 100vh; background-color: var(--background-color); font-family: 'Poppins', sans-serif; }
+.db-sidebar { width: 220px; background-color: var(--nava-blue); color: white; position: fixed; top: 0; left: 0; height: 100vh; display: flex; flex-direction: column; z-index: 100; }
+.db-sidebar-logo { height: 74px; display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+.sidebar-brand-logo { height: 28px; }
+.db-sidebar-nav { padding: 24px 16px; display: flex; flex-direction: column; gap: 8px; }
+.sidebar-nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.7); transition: all 0.2s; }
+.sidebar-nav-item:hover { background: rgba(255,255,255,0.1); color: white; }
+.sidebar-nav-item.active { background: rgba(255,255,255,0.15); color: white; border-left: 4px solid var(--nava-azure); }
+.db-main { flex: 1; margin-left: 220px; display: flex; flex-direction: column; }
+.db-header { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-color); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+.db-title { font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin: 0; }
+.db-subtitle { font-size: 0.75rem; color: var(--text-secondary); margin: 0.25rem 0 0; }
+.db-header-actions { display: flex; align-items: center; gap: 0.75rem; }
+.db-search-wrapper { position: relative; }
+.db-search-icon { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--text-secondary); }
+.db-search-input { padding: 0.5rem 1rem 0.5rem 2.25rem; font-size: 0.875rem; background: #f1f5f9; border: none; border-radius: 0.5rem; outline: none; width: 200px; font-family: 'Poppins', sans-serif; }
+.db-bell-btn { position: relative; width: 2.25rem; height: 2.25rem; border-radius: 0.5rem; background: #f1f5f9; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.db-notification-dot { position: absolute; top: -0.125rem; right: -0.125rem; width: 0.625rem; height: 0.625rem; background: #ef4444; border-radius: 50%; border: 2px solid #fff; }
+.db-avatar { width: 2rem; height: 2rem; border-radius: 50%; background: var(--nava-blue); display: flex; align-items: center; justify-content: center; color: white; font-size: 0.75rem; font-weight: 600; }
+.text-muted { color: var(--text-secondary); }
+
+/* Stub placeholder */
+.stub-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 0.75rem;
+  padding: 4rem 2rem;
+  color: var(--text-secondary);
+}
+.stub-placeholder svg { opacity: 0.2; }
+.stub-placeholder h2 { font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin: 0; }
+.stub-placeholder p  { font-size: 0.9rem; max-width: 400px; line-height: 1.6; margin: 0; }

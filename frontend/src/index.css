@@ -1,0 +1,64 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #f8fafc;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+:root {
+  /* ── NAVA Brand ─────────────────────────────────────────── */
+  --nava-blue:          #00328f;
+  --nava-azure:         #007FFF;
+  --nava-sky:           #0059ff;
+
+  /* ── Surfaces ───────────────────────────────────────────── */
+  --background-color:   #f8fafc;
+  --card-background:    #ffffff;
+  --surface-color:      #ffffff;
+  --surface-muted:      #f1f5f9;
+  --surface-subtle:     #f8fafc;
+  --surface-dark:       #1a1a2e;
+
+  /* ── Text ───────────────────────────────────────────────── */
+  --text-primary:       #2a2a27;
+  --text-secondary:     #64748b;
+  --text-muted:         #94a3b8;
+
+  /* ── Borders ────────────────────────────────────────────── */
+  --border-color:       #e2e8f0;
+  --border-light:       #cbd5e1;
+
+  /* ── Shadows ────────────────────────────────────────────── */
+  --shadow-sm:   0 0 0 1px rgba(0,0,0,.04), 0 1px 3px rgba(0,0,0,.06);
+  --shadow-md:   0 0 0 1px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.06);
+  --shadow-lg:   0 0 0 1px rgba(0,0,0,.03), 0 10px 25px -5px rgba(0,0,0,.08);
+  --shadow-xl:   0 0 0 1px rgba(0,0,0,.03), 0 20px 40px rgba(0,0,0,.08);
+
+  /* ── Status ─────────────────────────────────────────────── */
+  --status-danger:      #ef4444;
+  --status-warning:     #f59e0b;
+  --status-success:     #22c55e;
+
+  /* ── Radii ──────────────────────────────────────────────── */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   14px;
+  --radius-xl:   24px;
+
+  /* ── Legacy aliases ─────────────────────────────────────── */
+  --dark-teal:   #2C3E50;
+  --light-blue:  #E8F4FD;
+}
