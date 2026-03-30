@@ -1,7 +1,7 @@
 // ─── src/api.js ───────────────────────────────────────────────────────────────
 // Single source of truth for all backend API calls.
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080';
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
 
 /**
  * Reads the JWT token from localStorage (set by EmailGateModal or legacy login).

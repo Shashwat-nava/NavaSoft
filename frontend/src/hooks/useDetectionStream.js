@@ -1,7 +1,14 @@
 import { useRef, useCallback, useState } from 'react';
 
-const WS_URL = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080')
-  .replace(/^http/, 'ws');
+function resolveWsBaseUrl() {
+  const configured = process.env.REACT_APP_BACKEND_URL;
+  if (configured) return configured.replace(/^http/i, 'ws');
+
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${protocol}://${window.location.host}`;
+}
+
+const WS_URL = resolveWsBaseUrl();
 
 export function useDetectionStream() {
   const wsRef = useRef(null);
