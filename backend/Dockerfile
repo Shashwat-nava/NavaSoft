@@ -1,4 +1,6 @@
-FROM golang:1.26-bookworm AS builder
+FROM gocv/opencv:4.12.0 AS builder
+
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -6,7 +8,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /backend .
 
-FROM debian:bookworm-slim
+FROM gocv/opencv:4.12.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates ffmpeg && \

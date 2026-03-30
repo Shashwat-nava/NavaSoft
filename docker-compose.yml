@@ -21,21 +21,11 @@ services:
       - MLSERVER_PORT=50051
       - MLSERVER_WORKERS=2
       - MODEL_PATH=./models/yolox_voc_m.onnx
-      - DEVICE=cuda              # "cpu" or "cuda"
-      - GPU_DEVICE_ID=0       # uncomment for multi-GPU selection
+      - DEVICE=${DEVICE:-auto}  # auto: detect GPU, cuda: force GPU, cpu: force CPU
+      - GPU_DEVICE_ID=0
     volumes:
       - ./mlserver/models:/app/models:ro
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        # Uncomment below for GPU (requires nvidia-container-toolkit)
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   backend:
     build:
