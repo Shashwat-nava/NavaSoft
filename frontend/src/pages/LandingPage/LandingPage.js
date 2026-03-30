@@ -1332,7 +1332,7 @@ export default function LandingPage() {
                       download="nava-processed-feed.mp4"
                       className="lp-processed-download-btn"
                     >
-                      <Download size={14}/> Download Annotated Video
+                      <Download size={14}/> Download Annotated Evidence
                     </a>
                   </div>
                 </div>
