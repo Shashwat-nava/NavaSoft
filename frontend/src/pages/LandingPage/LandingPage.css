@@ -906,7 +906,7 @@
   width: 100%;
   display: block;
   max-height: 520px;
-  object-fit: contain;
+  object-fit: cover;
   background: #000;
 }
 

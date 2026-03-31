@@ -14,7 +14,7 @@ import {
 import EmailGateModal from "../LoginSignup/LoginSignup";
 import "./LandingPage.css";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8080";
 const MAX_VIDEO_SECONDS = 10;
 
 // ─── EHS METRICS ──────────────────────────────────────────────────────────────
@@ -345,7 +345,7 @@ const LiveFrameCanvas=({videoUrl,detections,frameIndex})=>{
 // ─── EVENT FRAME CANVAS ──────────────────────────────────────────────────────
 // Seeks the uploaded video to the exact frame where an event occurred,
 // draws the frame, then overlays all detection bounding boxes on top.
-const CM_EVT = { person:"#ef4444", forklift:"#f59e0b", head:"#a855f7", helmet:"#22c55e" };
+const CM_EVT = { person:"#22c55e", forklift:"#22c55e", head:"#ef4444", helmet:"#22c55e" };
 
 const EventFrameCanvas = ({ videoUrl, frameIndex, detections }) => {
   const canvasRef = useRef(null);
@@ -473,8 +473,7 @@ const EventModal = ({ event, onClose, videoUrl }) => {
               </div>
             </div>
             <div className="ev-modal-actions">
-              <button className="ev-primary-btn"><Download size={15}/> Download Clip</button>
-              <button className="ev-secondary-btn"><FileText size={15}/> Download Report</button>
+              <button className="ev-primary-btn"><Download size={15}/> Download Evidence</button>
             </div>
           </div>
           {/* RIGHT — metadata */}
@@ -724,10 +723,10 @@ export default function LandingPage() {
     setLiveFrame(null);
 
     const CM = {
-      Person:"#ef4444",  person:"#ef4444",
-      Forklift:"#f59e0b",forklift:"#f59e0b",
-      Head:"#a855f7",    head:"#a855f7",
-      Helmet:"#007FFF",  helmet:"#007FFF",
+      Person:"#22C55E",  person:"#22C55E",
+      Forklift:"#22C55E",forklift:"#22C55E",
+      Head:"#ef4444",    head:"#ef4444",
+      Helmet:"#22C55E",  helmet:"#22C55E",
     };
     const LD = { person:"Person", forklift:"Forklift", head:"Head", helmet:"Helmet" };
 
@@ -1308,10 +1307,10 @@ export default function LandingPage() {
               {processedUrl && (
                 <div className="lp-processed-video-section">
                   <div className="lp-processed-video-header">
-                    <div className="lp-processed-video-badge">
+                    {/* <div className="lp-processed-video-badge">
                       <Zap size={13}/> AI Processed
-                    </div>
-                    <h4 className="lp-processed-video-title">Annotated Safety Feed</h4>
+                    </div> */}
+                    <h4 className="lp-processed-video-title">Annotated Safety Evidence</h4>
                     <p className="lp-processed-video-sub">
                       Full video with AI-drawn bounding boxes for every detected person, forklift, helmet, and zone violation.
                     </p>
@@ -1332,7 +1331,7 @@ export default function LandingPage() {
                       download="nava-processed-feed.mp4"
                       className="lp-processed-download-btn"
                     >
-                      <Download size={14}/> Download Annotated Evidence
+                      <Download size={14}/> Download Evidence Video
                     </a>
                   </div>
                 </div>
