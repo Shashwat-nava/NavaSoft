@@ -17,12 +17,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "50051:50051"
+    runtime: nvidia
     environment:
       - MLSERVER_PORT=50051
       - MLSERVER_WORKERS=2
       - MODEL_PATH=./models/yolox_voc_m.onnx
       - DEVICE=${DEVICE:-auto}  # auto: detect GPU, cuda: force GPU, cpu: force CPU
       - GPU_DEVICE_ID=0
+      - NVIDIA_VISIBLE_DEVICES=all 
     volumes:
       - ./mlserver/models:/app/models:ro
     restart: unless-stopped
