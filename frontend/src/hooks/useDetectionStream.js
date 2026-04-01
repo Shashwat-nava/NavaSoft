@@ -1,7 +1,23 @@
 import { useRef, useCallback, useState } from 'react';
 
-const WS_URL = (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080')
-  .replace(/^http/, 'ws');
+function resolveWsBaseUrl() {
+  const envUrl = (process.env.REACT_APP_BACKEND_URL || '').trim();
+  if (envUrl) return envUrl.replace(/\/$/, '').replace(/^http/i, 'ws');
+
+  if (typeof window !== 'undefined') {
+    const isLocalHost =
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1';
+    if (isLocalHost) return 'ws://localhost:8080';
+
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsProto}//${window.location.host}`;
+  }
+
+  return 'ws://localhost:8080';
+}
+
+const WS_URL = resolveWsBaseUrl();
 
 export function useDetectionStream() {
   const wsRef = useRef(null);

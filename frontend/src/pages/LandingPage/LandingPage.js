@@ -14,7 +14,21 @@ import {
 import EmailGateModal from "../LoginSignup/LoginSignup";
 import "./LandingPage.css";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8080";
+function resolveBackendBaseUrl() {
+  const envUrl = (process.env.REACT_APP_BACKEND_URL || "").trim();
+  if (envUrl) return envUrl.replace(/\/$/, "");
+
+  if (typeof window !== "undefined") {
+    const isLocalHost =
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1";
+    if (isLocalHost) return "http://localhost:8080";
+  }
+
+  return "";
+}
+
+const BACKEND_URL = resolveBackendBaseUrl();
 const MAX_VIDEO_SECONDS = 10;
 
 // ─── EHS METRICS ──────────────────────────────────────────────────────────────

@@ -97,15 +97,28 @@ func envOr(key, fallback string) string {
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
-	allowed := map[string]bool{
-		"http://localhost:3000": true,
-		"http://localhost:3001": true,
+	allowed := map[string]bool{}
+	for _, origin := range strings.Split(envOr("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001"), ",") {
+		trimmed := strings.TrimSpace(origin)
+		if trimmed != "" {
+			allowed[trimmed] = true
+		}
 	}
+	allowAll := allowed["*"]
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 
-		if allowed[origin] || strings.HasPrefix(origin, "http://192.168.") || strings.HasPrefix(origin, "http://127.0.0.1") {
+		if allowAll && origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+		} else if allowed[origin] || strings.HasPrefix(origin, "http://192.168.") || strings.HasPrefix(origin, "http://127.0.0.1") {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
