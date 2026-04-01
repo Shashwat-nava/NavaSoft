@@ -104,9 +104,6 @@ func drawBoxes(mat *gocv.Mat, detections []analysis.Detection, width, height int
 
 		// Label Badge (No ID number)
 		drawLabel(mat, d, x, y, c)
-
-		// Confidence bar
-		drawConfBar(mat, d.Confidence, x, y+bh, bw, c)
 	}
 }
 
@@ -152,10 +149,10 @@ func drawLabel(mat *gocv.Mat, d analysis.Detection, x, y int, c color.RGBA) {
 	// Label Background matches box color
 	gocv.Rectangle(mat, image.Rect(bx, by, bx+badgeW, by+badgeH), c, -1)
 
-	// Label Text (White for high contrast)
+	// Label Text (Black for stronger contrast against bright fills)
 	textY := by + badgeH - pad
-	gocv.PutText(mat, classText, image.Pt(bx+pad, textY), gocv.FontHersheySimplex, fontScale, white, fontThick)
-	gocv.PutText(mat, confText, image.Pt(bx+pad+classSz.X+4, textY), gocv.FontHersheySimplex, fontScale*0.9, white, fontThick)
+	gocv.PutText(mat, classText, image.Pt(bx+pad, textY), gocv.FontHersheySimplex, fontScale, black, fontThick)
+	gocv.PutText(mat, confText, image.Pt(bx+pad+classSz.X+4, textY), gocv.FontHersheySimplex, fontScale*0.9, black, fontThick)
 }
 
 func drawConfBar(mat *gocv.Mat, confidence float64, x, y, bw int, c color.RGBA) {
@@ -168,6 +165,24 @@ func drawConfBar(mat *gocv.Mat, confidence float64, x, y, bw int, c color.RGBA) 
 	gocv.Rectangle(mat, image.Rect(x, y+1, x+fillW, y+1+barH), c, -1)
 }
 
-func minInt(a, b int) int { if a < b { return a }; return b }
-func maxInt(a, b int) int { if a > b { return a }; return b }
-func clamp(v, lo, hi int) int { if v < lo { return lo }; if v > hi { return hi }; return v }
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}

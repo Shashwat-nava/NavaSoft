@@ -60,6 +60,24 @@ function computeMetrics(frames, analytics) {
   const GAP      = FPS * 2;                    // 2s gap = new incident
   const duration = total / FPS;                // video duration in seconds
 
+  const isValidTrack = (id) => Number.isInteger(id) && id > 0;
+  const helmetMatchesWorker = (worker, helmet) => {
+    if (!worker?.box || !helmet?.box) return false;
+    const [wx, wy, ww, wh] = worker.box;
+    const [hx, hy, hw, hh] = helmet.box;
+    const workerCx = wx + ww / 2;
+    const helmetCx = hx + hw / 2;
+    const helmetCy = hy + hh / 2;
+
+    // Helmet should be above or near upper body of the worker box.
+    const topBandYMin = wy - wh * 0.20;
+    const topBandYMax = wy + wh * 0.55;
+    const lateralMax = ww * 0.60;
+
+    return Math.abs(helmetCx - workerCx) <= lateralMax &&
+      helmetCy >= topBandYMin && helmetCy <= topBandYMax;
+  };
+
   // ── Per-frame flags ───────────────────────────────────────────────────────
   const nmFrames  = []; // indices of near-miss frames
   const expFrames = []; // indices of exposure frames
@@ -69,10 +87,37 @@ function computeMetrics(frames, analytics) {
   let workersWithHelmet = 0;
   let workersTotal      = 0;
 
+  // Tracker-based PPE aggregation (preferred when track IDs are available).
+  const trackPPEStats = new Map(); // trackId -> { total, compliant }
+
   frames.forEach((fr, idx) => {
     const fl = fr.detections.filter(d => /forklift/i.test(d.label));
     const w  = fr.detections.filter(d => /person/i.test(d.label));
     const h  = fr.detections.filter(d => /helmet/i.test(d.label));
+
+    // Track-aware PPE scoring: each person track contributes one observation per frame.
+    const seenTrackInFrame = new Set();
+    const usedHelmetIdx = new Set();
+    w.forEach(worker => {
+      const tid = worker.trackId;
+      if (!isValidTrack(tid) || seenTrackInFrame.has(tid)) return;
+
+      let compliant = false;
+      for (let i = 0; i < h.length; i++) {
+        if (usedHelmetIdx.has(i)) continue;
+        if (helmetMatchesWorker(worker, h[i])) {
+          compliant = true;
+          usedHelmetIdx.add(i);
+          break;
+        }
+      }
+
+      const prev = trackPPEStats.get(tid) || { total: 0, compliant: 0 };
+      prev.total += 1;
+      if (compliant) prev.compliant += 1;
+      trackPPEStats.set(tid, prev);
+      seenTrackInFrame.add(tid);
+    });
 
     // PPE — count per frame, then average at the end (per-frame coverage)
     if (w.length > 0) {
@@ -127,7 +172,7 @@ function computeMetrics(frames, analytics) {
 
   // ── PPE — unique-worker-based compliance ─────────────────────────────────
   // Use max simultaneous workers as proxy for unique workers in the clip
-  const uniqueWorkers = uniqueWorkerCount(frames);
+  const uniqueWorkers = trackPPEStats.size > 0 ? trackPPEStats.size : uniqueWorkerCount(frames);
   // PPE non-compliant = frames where any worker lacks a helmet, clustered
   const ppeViolFrames = [];
   frames.forEach((fr, idx) => {
@@ -138,7 +183,13 @@ function computeMetrics(frames, analytics) {
   const ppeViolIncidents = clusterFrames(ppeViolFrames, GAP);
 
   // Compliance % = proportion of time workers were properly equipped
-  const ppeCompliance = analytics?.ppe_compliance ??
+  const trackedTotal = [...trackPPEStats.values()].reduce((s, v) => s + v.total, 0);
+  const trackedCompliant = [...trackPPEStats.values()].reduce((s, v) => s + v.compliant, 0);
+  const trackerPPECompliance = trackedTotal > 0
+    ? Math.round((trackedCompliant / trackedTotal) * 100)
+    : null;
+
+  const ppeCompliance = trackerPPECompliance ?? analytics?.ppe_compliance ??
     (workersTotal > 0 ? Math.round((workersWithHelmet / workersTotal) * 100) : null);
 
   // ── Trend data (unchanged — charts still use frame-level data) ───────────
@@ -179,85 +230,171 @@ function computeMetrics(frames, analytics) {
 }
 
 // ─── BUILD EVENT LIST from AI frame data ──────────────────────────────────────
-function buildEventList(frames) {
-  const events=[]; const seen=new Set();
-  frames.forEach((fr,idx)=>{
-    const forklifts = fr.detections.filter(d=>/forklift/i.test(d.label));
-    const workers   = fr.detections.filter(d=>/person/i.test(d.label));
-    const helmets   = fr.detections.filter(d=>/helmet/i.test(d.label));
-    const inZone    = fr.detections.filter(d=>d.inZone);
-    const ts        = fr.timestamp || `Frame ${fr.frameIndex ?? idx}`;
-    const ppeOk     = helmets.length >= workers.length && workers.length > 0;
+function buildEventList(frames, selectedMetrics = []) {
+  const selected = new Set(selectedMetrics);
+  const includeAll = selected.size === 0;
+  const allowNearMiss = includeAll || selected.has("near_miss");
+  const allowZoneViolation = includeAll || selected.has("zone_violation");
+  const allowPPEViolation = includeAll || selected.has("ppe_compliance");
+  const allowPedestrianExposure = includeAll || selected.has("pedestrian_exposure");
 
-    // Near-Miss
-    workers.forEach(w=>{
-      forklifts.forEach(fl=>{
-        if(ed(bc(w.box),bc(fl.box))<PROX_PX){
-          const key=`NM-${idx}`;
-          if(!seen.has(key)){ seen.add(key);
-            events.push({ id:`EVT-${String(events.length+1).padStart(3,"0")}`,
-              timestamp:ts, eventType:"Near-Miss Event", severity:"High",
-              ppeStatus:ppeOk?"Compliant":"Non-Compliant",
-              exposure:`${((fr.frameIndex??idx)/24).toFixed(1)}s`,
-              camera:"Uploaded Feed", zone:"Proximity Zone",
-              confidence:Math.round((w.confidence||0.91)*100),
-              personsDetected:workers.length, vehicleDetected:"Forklift",
-              frameIndex:fr.frameIndex??idx, detections:fr.detections });
+  const FPS = 5;
+  const GAP = FPS * 2;
+  const events = [];
+  const isValidTrack = (id) => Number.isInteger(id) && id > 0;
+  const helmetMatchesWorker = (worker, helmet) => {
+    if (!worker?.box || !helmet?.box) return false;
+    const [wx, wy, ww, wh] = worker.box;
+    const [hx, hy, hw, hh] = helmet.box;
+    const workerCx = wx + ww / 2;
+    const helmetCx = hx + hw / 2;
+    const helmetCy = hy + hh / 2;
+
+    const topBandYMin = wy - wh * 0.20;
+    const topBandYMax = wy + wh * 0.55;
+    const lateralMax = ww * 0.60;
+
+    return Math.abs(helmetCx - workerCx) <= lateralMax &&
+      helmetCy >= topBandYMin && helmetCy <= topBandYMax;
+  };
+
+  const clusterIndices = (indices, gapFrames) => {
+    if (!indices.length) return [];
+    const clusters = [[indices[0]]];
+    for (let i = 1; i < indices.length; i++) {
+      if (indices[i] - indices[i - 1] <= gapFrames) {
+        clusters[clusters.length - 1].push(indices[i]);
+      } else {
+        clusters.push([indices[i]]);
+      }
+    }
+    return clusters;
+  };
+
+  const nmFrames = [];
+  const zvFrames = [];
+  const ppeFramesFallback = [];
+  const ppeReportedTracks = new Set();
+  const expFrames = [];
+
+  frames.forEach((fr, idx) => {
+    const forklifts = fr.detections.filter(d => /forklift/i.test(d.label));
+    const workers = fr.detections.filter(d => /person/i.test(d.label));
+    const helmets = fr.detections.filter(d => /helmet/i.test(d.label));
+
+    if (allowZoneViolation && fr.detections.some(d => d.inZone)) zvFrames.push(idx);
+
+    if (allowPPEViolation && workers.length > 0) {
+      const usedHelmetIdx = new Set();
+      let hasTrackedWorkers = false;
+      let hasFallbackViolation = false;
+
+      workers.forEach(worker => {
+        const tid = worker.trackId;
+        if (!isValidTrack(tid)) {
+          hasFallbackViolation = true;
+          return;
+        }
+        hasTrackedWorkers = true;
+
+        let compliant = false;
+        for (let i = 0; i < helmets.length; i++) {
+          if (usedHelmetIdx.has(i)) continue;
+          if (helmetMatchesWorker(worker, helmets[i])) {
+            compliant = true;
+            usedHelmetIdx.add(i);
+            break;
           }
         }
-      });
-    });
 
-    // Zone Violation
-    if(inZone.length>0){
-      const key=`ZV-${idx}`;
-      if(!seen.has(key)){ seen.add(key);
-        events.push({ id:`EVT-${String(events.length+1).padStart(3,"0")}`,
-          timestamp:ts, eventType:"Zone Violation", severity:"Medium",
-          ppeStatus:ppeOk?"Compliant":"Non-Compliant",
-          exposure:`${((fr.frameIndex??idx)/24).toFixed(1)}s`,
-          camera:"Uploaded Feed", zone:inZone[0]?.zone||"Exclusion Zone",
-          confidence:Math.round((inZone[0]?.confidence||0.87)*100),
-          personsDetected:workers.length, vehicleDetected:forklifts.length>0?"Forklift":"None",
-          frameIndex:fr.frameIndex??idx, detections:fr.detections });
+        if (!compliant && !ppeReportedTracks.has(tid)) {
+          ppeReportedTracks.add(tid);
+          const ts = fr.timestamp || `Frame ${fr.frameIndex ?? idx}`;
+          const clusterConf = fr.detections.reduce((m, d) => Math.max(m, d.confidence || 0), 0);
+          events.push({
+            id: `EVT-${String(events.length + 1).padStart(3, "0")}`,
+            timestamp: ts,
+            eventType: "PPE Violation",
+            severity: helmets.length === 0 ? "High" : "Medium",
+            ppeStatus: "Non-Compliant",
+            exposure: `${((fr.frameIndex ?? idx) / FPS).toFixed(1)}s`,
+            camera: "Uploaded Feed",
+            zone: "General Area",
+            confidence: Math.round((clusterConf || 0.85) * 100),
+            personsDetected: 1,
+            vehicleDetected: forklifts.length > 0 ? "Forklift" : "None",
+            frameIndex: fr.frameIndex ?? idx,
+            detections: fr.detections,
+            trackId: tid,
+          });
+        }
+      });
+
+      if (!hasTrackedWorkers && hasFallbackViolation && helmets.length < workers.length) {
+        ppeFramesFallback.push(idx);
       }
     }
 
-    // PPE Violation
-    if(workers.length>0 && helmets.length<workers.length){
-      const key=`PPE-${idx}`;
-      if(!seen.has(key)){ seen.add(key);
-        events.push({ id:`EVT-${String(events.length+1).padStart(3,"0")}`,
-          timestamp:ts, eventType:"PPE Violation",
-          severity:helmets.length===0?"High":"Medium",
-          ppeStatus:"Non-Compliant",
-          exposure:`${((fr.frameIndex??idx)/24).toFixed(1)}s`,
-          camera:"Uploaded Feed", zone:"General Area",
-          confidence:Math.round(((fr.detections[0]?.confidence)||0.85)*100),
-          personsDetected:workers.length, vehicleDetected:forklifts.length>0?"Forklift":"None",
-          frameIndex:fr.frameIndex??idx, detections:fr.detections });
-      }
-    }
+    if (!forklifts.length || !workers.length) return;
 
-    // Pedestrian Exposure
-    workers.forEach(w=>{
-      forklifts.forEach(fl=>{
-        if(ed(bc(w.box),bc(fl.box))<PROX_PX*2.5 && ed(bc(w.box),bc(fl.box))>=PROX_PX){
-          const key=`PE-${idx}`;
-          if(!seen.has(key)){ seen.add(key);
-            events.push({ id:`EVT-${String(events.length+1).padStart(3,"0")}`,
-              timestamp:ts, eventType:"Pedestrian Exposure", severity:"Low",
-              ppeStatus:ppeOk?"Compliant":"Non-Compliant",
-              exposure:`${((fr.frameIndex??idx)/24).toFixed(1)}s`,
-              camera:"Uploaded Feed", zone:"Forklift Corridor",
-              confidence:Math.round((w.confidence||0.82)*100),
-              personsDetected:workers.length, vehicleDetected:"Forklift",
-              frameIndex:fr.frameIndex??idx, detections:fr.detections });
-          }
-        }
-      });
-    });
+    let nearMiss = false;
+    let exposure = false;
+    workers.forEach(w => forklifts.forEach(fl => {
+      const dist = ed(bc(w.box), bc(fl.box));
+      if (dist < PROX_PX) {
+        nearMiss = true;
+        exposure = true;
+      } else if (dist < PROX_PX * 2.5) {
+        exposure = true;
+      }
+    }));
+
+    if (allowNearMiss && nearMiss) nmFrames.push(idx);
+    if (allowPedestrianExposure && exposure && !nearMiss) expFrames.push(idx);
   });
+
+  const pushClusterEvents = (clusters, eventType, severityFn, zoneFn) => {
+    clusters.forEach(cluster => {
+      const idx = cluster[0];
+      const fr = frames[idx];
+      const forklifts = fr.detections.filter(d => /forklift/i.test(d.label));
+      const workers = fr.detections.filter(d => /person/i.test(d.label));
+      const helmets = fr.detections.filter(d => /helmet/i.test(d.label));
+      const ts = fr.timestamp || `Frame ${fr.frameIndex ?? idx}`;
+      const ppeOk = helmets.length >= workers.length && workers.length > 0;
+      const clusterConf = Math.max(...cluster.map(i => {
+        const dets = frames[i]?.detections || [];
+        const c = dets.reduce((m, d) => Math.max(m, d.confidence || 0), 0);
+        return c;
+      }), 0);
+
+      events.push({
+        id: `EVT-${String(events.length + 1).padStart(3, "0")}`,
+        timestamp: ts,
+        eventType,
+        severity: severityFn(fr, workers, helmets),
+        ppeStatus: eventType === "PPE Violation" ? "Non-Compliant" : (ppeOk ? "Compliant" : "Non-Compliant"),
+        exposure: `${((fr.frameIndex ?? idx) / FPS).toFixed(1)}s`,
+        camera: "Uploaded Feed",
+        zone: zoneFn(fr),
+        confidence: Math.round((clusterConf || 0.85) * 100),
+        personsDetected: workers.length,
+        vehicleDetected: forklifts.length > 0 ? "Forklift" : "None",
+        frameIndex: fr.frameIndex ?? idx,
+        detections: fr.detections,
+      });
+    });
+  };
+
+  pushClusterEvents(clusterIndices(nmFrames, GAP), "Near-Miss Event", () => "High", () => "Proximity Zone");
+  pushClusterEvents(clusterIndices(zvFrames, GAP), "Zone Violation", () => "Medium", (fr) => {
+    const inZone = fr.detections.filter(d => d.inZone);
+    return inZone[0]?.zone || "Exclusion Zone";
+  });
+  // Fallback PPE incident clustering only when track IDs are unavailable.
+  pushClusterEvents(clusterIndices(ppeFramesFallback, GAP), "PPE Violation", (_fr, _w, helmets) => helmets.length === 0 ? "High" : "Medium", () => "General Area");
+  pushClusterEvents(clusterIndices(expFrames, GAP), "Pedestrian Exposure", () => "Low", () => "Forklift Corridor");
+
   return events;
 }
 
@@ -302,11 +439,11 @@ const ScrollingVideoGallery = ({ onSelectVideo }) => {
 // --- LIVE FRAME CANVAS (real-time preview during analysis) ---------
 const CM_LIVE={person:"#00ff00",forklift:"#00ff00",head:"#ff0000",helmet:"#00ff00"};
 
-const LiveFrameCanvas=({videoUrl,detections,frameIndex})=>{
+const LiveFrameCanvas=({videoUrl,detections,frameIndex,annotatedFrame})=>{
   const canvasRef=useRef(null);
   const videoRef=useRef(null);
   useEffect(()=>{
-    if(!videoUrl||!canvasRef.current)return;
+    if (annotatedFrame || !videoUrl || !canvasRef.current) return;
     const canvas=canvasRef.current;
     const ctx=canvas.getContext("2d");
     const seekTo=Math.max(0,frameIndex/5);
@@ -338,14 +475,26 @@ const LiveFrameCanvas=({videoUrl,detections,frameIndex})=>{
     };
     if(Math.abs(video.currentTime-seekTo)>0.15){video.onseeked=draw;video.currentTime=seekTo;}
     else{video.readyState>=2?draw():(video.onloadeddata=draw);}
-  },[videoUrl,detections,frameIndex]);
+  },[videoUrl,detections,frameIndex,annotatedFrame]);
+
+  if (annotatedFrame) {
+    return (
+      <img
+        src={`data:image/jpeg;base64,${annotatedFrame}`}
+        alt={`Annotated frame ${frameIndex}`}
+        className="lp-live-canvas"
+        style={{width:"100%",borderRadius:8,display:"block",background:"#0f172a"}}
+      />
+    );
+  }
+
   return<canvas ref={canvasRef} className="lp-live-canvas" style={{width:"100%",borderRadius:8,display:"block",background:"#0f172a"}}/>;
 };
 
 // ─── EVENT FRAME CANVAS ──────────────────────────────────────────────────────
 // Seeks the uploaded video to the exact frame where an event occurred,
 // draws the frame, then overlays all detection bounding boxes on top.
-const CM_EVT = { person:"#22c55e", forklift:"#22c55e", head:"#ef4444", helmet:"#22c55e" };
+const CM_EVT = { person:"#00ff00", forklift:"#00ff00", head:"#ff0000", helmet:"#00ff00" };
 
 const EventFrameCanvas = ({ videoUrl, frameIndex, detections }) => {
   const canvasRef = useRef(null);
@@ -378,28 +527,42 @@ const EventFrameCanvas = ({ videoUrl, frameIndex, detections }) => {
         const w  = nw * canvas.width;
         const h  = nh * canvas.height;
         const lbl = (d.label || "").toLowerCase();
-        const col = CM_EVT[lbl] || "#6366f1";
+        const col = CM_EVT[lbl] || "#00ff00";
 
-        // Glowing box
-        ctx.shadowColor  = col;
-        ctx.shadowBlur   = 8;
-        ctx.strokeStyle  = col;
-        ctx.lineWidth    = 2.5;
+        // Main border
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1;
         ctx.strokeRect(x, y, w, h);
-        ctx.shadowBlur   = 0;
-        ctx.shadowColor  = "transparent";
 
-        // Label pill
-        ctx.font = "bold 12px Poppins,sans-serif";
-        const text = `${d.label}  ${Math.round((d.confidence || 0) * 100)}%`;
-        const tw   = ctx.measureText(text).width + 12;
-        ctx.fillStyle = col;
+        // Corner brackets (same visual language as live feed)
+        const cornerLen = Math.max(10, Math.min(40, Math.floor(Math.min(w, h) / 5)));
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(x, y - 22, tw, 20, 3);
-        else               ctx.rect(x, y - 22, tw, 20);
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(text, x + 6, y - 7);
+        // top-left
+        ctx.moveTo(x, y); ctx.lineTo(x + cornerLen, y);
+        ctx.moveTo(x, y); ctx.lineTo(x, y + cornerLen);
+        // top-right
+        ctx.moveTo(x + w, y); ctx.lineTo(x + w - cornerLen, y);
+        ctx.moveTo(x + w, y); ctx.lineTo(x + w, y + cornerLen);
+        // bottom-left
+        ctx.moveTo(x, y + h); ctx.lineTo(x + cornerLen, y + h);
+        ctx.moveTo(x, y + h); ctx.lineTo(x, y + h - cornerLen);
+        // bottom-right
+        ctx.moveTo(x + w, y + h); ctx.lineTo(x + w - cornerLen, y + h);
+        ctx.moveTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen);
+        ctx.stroke();
+
+        // Label badge: sharp rectangle, black text
+        const text = `${d.label} ${Math.round((d.confidence || 0) * 100)}%`;
+        ctx.font = "bold 11px Poppins,sans-serif";
+        const pad = 6;
+        const badgeH = 20;
+        const badgeW = ctx.measureText(text).width + pad * 2;
+        const by = y - badgeH < 0 ? y : y - badgeH;
+        ctx.fillStyle = col;
+        ctx.fillRect(x, by, badgeW, badgeH);
+        ctx.fillStyle = "#000000";
+        ctx.fillText(text, x + pad, by + 14);
       });
 
       // Timestamp watermark bottom-left
@@ -504,18 +667,7 @@ const EventModal = ({ event, onClose, videoUrl }) => {
                 <span className="ev-meta-label">PPE Status</span>
                 <span className={`ev-status-badge ${isCompliant?"success":"danger"}`}>{event.ppeStatus}</span>
               </div>
-              <div className="ev-meta-item">
-                <span className="ev-meta-label">Exposure Duration</span>
-                <span className="ev-meta-value ev-text-danger">{event.exposure}</span>
-              </div>
-              <div className="ev-meta-item">
-                <span className="ev-meta-label">Persons Detected</span>
-                <span className="ev-meta-value">{event.personsDetected ?? 2}</span>
-              </div>
-              <div className="ev-meta-item">
-                <span className="ev-meta-label">Vehicle Detected</span>
-                <span className="ev-meta-value">{event.vehicleDetected || "Forklift"}</span>
-              </div>
+              
             </div>
           </div>
         </div>
@@ -733,11 +885,13 @@ export default function LandingPage() {
     const formatFrame = (fr) => ({
       frameIndex: fr.frameIndex,
       timestamp:  fr.timestamp,
+      annotatedFrame: fr.annotatedFrame || null,
       detections: (fr.detections || []).map(d => ({
         label:      LD[String(d.label || "").toLowerCase()] || d.label,
         color:      CM[d.label] || "#22C55E",
         box:        d.box,
         confidence: d.confidence,
+        trackId:    d.trackId ?? d.track_id ?? null,
         inZone:     d.in_zone || false,
       })),
     });
@@ -841,6 +995,7 @@ export default function LandingPage() {
               setLiveFrame({
                 frameIndex: ff.frameIndex,
                 timestamp:  ff.timestamp,
+                annotatedFrame: ff.annotatedFrame,
                 detections: ff.detections,
                 metrics:    msg.metrics || {},
               });
@@ -889,7 +1044,7 @@ export default function LandingPage() {
 
   // ── Derived data ────────────────────────────────────────────────────────────
   const M = frames.length>0 ? computeMetrics(frames,analytics) : null;
-  const eventList = useMemo(()=>frames.length>0?buildEventList(frames):[], [frames]);
+  const eventList = useMemo(()=>frames.length>0?buildEventList(frames, selMetrics):[], [frames, selMetrics]);
 
   const filteredEvents = useMemo(()=>eventList.filter(e=>{
     if(evFilters.eventType!=="All Types" && e.eventType!==evFilters.eventType) return false;
@@ -1119,6 +1274,7 @@ export default function LandingPage() {
                     videoUrl={videoUrl}
                     detections={liveFrame.detections}
                     frameIndex={liveFrame.frameIndex}
+                    annotatedFrame={liveFrame.annotatedFrame}
                   />
                 ) : (
                   <div className="lp-live-placeholder">

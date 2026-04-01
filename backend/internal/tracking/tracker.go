@@ -13,10 +13,11 @@ import "math"
 
 const (
 	highScoreThresh = 0.5  // split detections into high / low confidence
-	matchIoUThresh  = 0.25 // minimum IoU for a valid association
+	matchIoUThresh  = 0.30 // minimum IoU for a valid association
 	maxLostFrames   = 10   // keep lost tracks this many frames before removal
 	confirmAfter    = 3    // tentative → confirmed after N consecutive matches
 	velocityAlpha   = 0.4  // EMA smoothing for motion velocity
+	minBoxArea      = 0.0004
 )
 
 type Detection struct {
@@ -102,6 +103,14 @@ func NewTracker() *Tracker {
 
 // Update runs one ByteTrack cycle and returns currently visible tracks.
 func (t *Tracker) Update(detections []Detection) []Track {
+	// Normalize and filter noisy detections before association.
+	cleanDets := make([]Detection, 0, len(detections))
+	for _, d := range detections {
+		if nd, ok := sanitizeDetection(d); ok {
+			cleanDets = append(cleanDets, nd)
+		}
+	}
+
 	// --- 0. Predict next position for every tracked object ---
 	for _, s := range t.active {
 		s.predict()
@@ -112,7 +121,7 @@ func (t *Tracker) Update(detections []Detection) []Track {
 
 	// --- 1. Split detections by confidence ---
 	var highDets, lowDets []Detection
-	for _, d := range detections {
+	for _, d := range cleanDets {
 		if d.Confidence >= highScoreThresh {
 			highDets = append(highDets, d)
 		} else {
@@ -268,6 +277,9 @@ func associate(tracks []*strack, dets []Detection) (matchedT, matchedD, unmatche
 		costs[i] = make([]float64, len(dets))
 		for j, d := range dets {
 			if tr.label == d.Label {
+				if !withinMotionGate(tr.box, d.Box) {
+					continue
+				}
 				costs[i][j] = iou(tr.box, d.Box)
 			}
 		}
@@ -356,4 +368,66 @@ func iou(a, b [4]float64) float64 {
 		return 0
 	}
 	return inter / union
+}
+
+func sanitizeDetection(d Detection) (Detection, bool) {
+	b := d.Box
+	b[0] = clamp01(b[0])
+	b[1] = clamp01(b[1])
+	b[2] = clamp01(b[2])
+	b[3] = clamp01(b[3])
+
+	if b[2] <= 0 || b[3] <= 0 {
+		return Detection{}, false
+	}
+	if b[0]+b[2] > 1 {
+		b[2] = 1 - b[0]
+	}
+	if b[1]+b[3] > 1 {
+		b[3] = 1 - b[1]
+	}
+	if b[2] <= 0 || b[3] <= 0 {
+		return Detection{}, false
+	}
+	if b[2]*b[3] < minBoxArea {
+		return Detection{}, false
+	}
+
+	d.Box = b
+	return d, true
+}
+
+func withinMotionGate(prev, next [4]float64) bool {
+	px, py := boxCenter(prev)
+	nx, ny := boxCenter(next)
+	dist := math.Hypot(nx-px, ny-py)
+
+	// Allow larger movement for larger tracks; cap to avoid long-distance ID jumps.
+	base := math.Hypot(prev[2], prev[3])
+	allowed := clampFloat(base*2.0, 0.08, 0.35)
+	return dist <= allowed
+}
+
+func boxCenter(b [4]float64) (float64, float64) {
+	return b[0] + b[2]/2, b[1] + b[3]/2
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func clampFloat(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

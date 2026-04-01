@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"sort"
 	"sync"
 
 	"github.com/fogleman/gg"
@@ -271,7 +272,108 @@ func (m *YOLOXModel) Detect(img image.Image, confThreshold float32) ([]Detection
 		})
 	}
 
+	// Remove duplicate overlapping boxes per class; this prevents inflated counts.
+	detections = applyClasswiseNMS(detections, 0.45, 300)
+
 	return detections, nil
+}
+
+func applyClasswiseNMS(detections []Detection, iouThreshold float32, maxKeep int) []Detection {
+	if len(detections) <= 1 {
+		return detections
+	}
+
+	byLabel := make(map[string][]Detection)
+	for _, d := range detections {
+		byLabel[d.Label] = append(byLabel[d.Label], d)
+	}
+
+	out := make([]Detection, 0, len(detections))
+	for _, clsDets := range byLabel {
+		kept := nmsDetections(clsDets, iouThreshold, maxKeep)
+		out = append(out, kept...)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Confidence > out[j].Confidence
+	})
+	if maxKeep > 0 && len(out) > maxKeep {
+		out = out[:maxKeep]
+	}
+
+	return out
+}
+
+func nmsDetections(detections []Detection, iouThreshold float32, maxKeep int) []Detection {
+	if len(detections) <= 1 {
+		return detections
+	}
+
+	sort.Slice(detections, func(i, j int) bool {
+		return detections[i].Confidence > detections[j].Confidence
+	})
+
+	kept := make([]Detection, 0, len(detections))
+	for _, d := range detections {
+		suppress := false
+		for _, k := range kept {
+			if boxIoU(d.Box, k.Box) > iouThreshold {
+				suppress = true
+				break
+			}
+		}
+		if suppress {
+			continue
+		}
+		kept = append(kept, d)
+		if maxKeep > 0 && len(kept) >= maxKeep {
+			break
+		}
+	}
+
+	return kept
+}
+
+func boxIoU(a, b [4]float32) float32 {
+	ax1, ay1 := a[0], a[1]
+	ax2, ay2 := a[0]+a[2], a[1]+a[3]
+	bx1, by1 := b[0], b[1]
+	bx2, by2 := b[0]+b[2], b[1]+b[3]
+
+	ix1 := maxf32(ax1, bx1)
+	iy1 := maxf32(ay1, by1)
+	ix2 := minf32(ax2, bx2)
+	iy2 := minf32(ay2, by2)
+
+	iw := ix2 - ix1
+	ih := iy2 - iy1
+	if iw <= 0 || ih <= 0 {
+		return 0
+	}
+
+	inter := iw * ih
+	areaA := a[2] * a[3]
+	areaB := b[2] * b[3]
+	union := areaA + areaB - inter
+	if union <= 0 {
+		return 0
+	}
+
+	return inter / union
+}
+
+func minf32(a, b float32) float32 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxf32(a, b float32) float32 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func maxf(a, b float64) float64 {

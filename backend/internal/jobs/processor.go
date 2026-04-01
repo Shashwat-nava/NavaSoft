@@ -91,6 +91,14 @@ func (p *Processor) worker(id int) {
 	}
 }
 
+type frameData struct {
+	frameIdx int
+	mat      gocv.Mat
+	jpegData []byte
+	width    int
+	height   int
+}
+
 func (p *Processor) process(job *Job) {
 	job.Status = "processing"
 	log.Printf("job %s: processing video=%s user=%d", job.ID, job.VideoID, job.UserID)
@@ -129,6 +137,20 @@ startProcessing:
 		job.Status = "failed"
 		return
 	}
+	defer writer.Close()
+
+	// Open bidirectional stream for parallel frame processing
+	streamInCh, streamOutCh, err := p.ml.DetectStream(p.ctx)
+	if err != nil {
+		log.Printf("job %s: open stream: %v", job.ID, err)
+		p.hub.SendToJob(job.ID, ws.Message{
+			Type:  "error",
+			JobID: job.ID,
+			Error: fmt.Sprintf("failed to open detection stream: %v", err),
+		})
+		job.Status = "failed"
+		return
+	}
 
 	sampleInterval := 1
 	if cap.FPS > float64(targetFPS) {
@@ -140,92 +162,155 @@ startProcessing:
 	mat := gocv.NewMat()
 	defer mat.Close()
 
-	rawIdx := 0
-	frameIdx := 0
+	// Queue to maintain frame data in order while inference happens
+	frameQueue := make(chan frameData, 32)
 
-	for cap.Read(&mat) {
-		if mat.Empty() || p.ctx.Err() != nil {
-			break
-		}
+	// WaitGroup to coordinate sender and receiver goroutines
+	var wg sync.WaitGroup
 
-		if sampleInterval > 1 && rawIdx%sampleInterval != 0 {
+	// Sender goroutine: encode frames and send them to the stream
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(streamInCh)
+		defer close(frameQueue)
+
+		rawIdx := 0
+		frameIdx := 0
+
+		for cap.Read(&mat) {
+			if mat.Empty() || p.ctx.Err() != nil {
+				break
+			}
+
+			if sampleInterval > 1 && rawIdx%sampleInterval != 0 {
+				rawIdx++
+				continue
+			}
 			rawIdx++
-			continue
-		}
-		rawIdx++
 
-		jpegBytes, err := video.EncodeJPEG(mat, 90)
-		if err != nil {
-			log.Printf("job %s frame %d: encode jpeg: %v", job.ID, frameIdx, err)
+			jpegBytes, err := video.EncodeJPEG(mat, 90)
+			if err != nil {
+				log.Printf("job %s frame %d: encode jpeg: %v", job.ID, frameIdx, err)
+				frameIdx++
+				continue
+			}
+
+			// Send frame to stream without waiting for result
+			select {
+			case <-p.ctx.Done():
+				return
+			default:
+			}
+
+			matClone := mat.Clone()
+			select {
+			case <-p.ctx.Done():
+				matClone.Close()
+				return
+			case streamInCh <- mlclient.StreamFrame{
+				JpegData:      jpegBytes,
+				Width:         cap.Width,
+				Height:        cap.Height,
+				ConfThreshold: 0.3,
+			}:
+			}
+
+			// Queue frame data for processing when result arrives
+			select {
+			case <-p.ctx.Done():
+				matClone.Close()
+				return
+			case frameQueue <- frameData{
+				frameIdx: frameIdx,
+				mat:      matClone,
+				jpegData: jpegBytes,
+				width:    cap.Width,
+				height:   cap.Height,
+			}:
+			}
+
 			frameIdx++
-			continue
 		}
+	}()
 
-		dets, inferMs, err := p.ml.Detect(p.ctx, jpegBytes, cap.Width, cap.Height, 0.3)
-		if err != nil {
-			log.Printf("job %s frame %d: detect: %v", job.ID, frameIdx, err)
-			frameIdx++
-			continue
-		}
+	// Receiver goroutine: process results as they arrive
+	wg.Add(1)
+	var frameIdxCounter int
+	go func() {
+		defer wg.Done()
 
-		trackDets := make([]tracking.Detection, len(dets))
-		for i, d := range dets {
-			trackDets[i] = tracking.Detection{Label: d.Label, Box: d.Box, Confidence: d.Confidence}
-		}
-		tracks := tracker.Update(trackDets)
+		for result := range streamOutCh {
+			select {
+			case <-p.ctx.Done():
+				return
+			case frame, ok := <-frameQueue:
+				if !ok {
+					return
+				}
+				// Process detections for this frame
+				trackDets := make([]tracking.Detection, len(result.Detections))
+				for i, d := range result.Detections {
+					trackDets[i] = tracking.Detection{Label: d.Label, Box: d.Box, Confidence: d.Confidence}
+				}
+				tracks := tracker.Update(trackDets)
 
-		analysisDets := make([]analysis.Detection, len(tracks))
-		for i, t := range tracks {
-			analysisDets[i] = analysis.Detection{
-				Label:      t.Label,
-				Confidence: t.Confidence,
-				Box:        t.Box,
-				TrackID:    t.ID,
-				InZone:     false,
+				analysisDets := make([]analysis.Detection, len(tracks))
+				for i, t := range tracks {
+					analysisDets[i] = analysis.Detection{
+						Label:      t.Label,
+						Confidence: t.Confidence,
+						Box:        t.Box,
+						TrackID:    t.ID,
+						InZone:     false,
+					}
+				}
+
+				metrics := analysis.AnalyzeFrame(analysisDets, job.Zones, frame.width, frame.height)
+
+				annotated := frame.mat.Clone()
+				video.DrawDetections(&annotated, analysisDets, job.Zones, frame.width, frame.height)
+
+				if err := writer.Write(annotated); err != nil {
+					log.Printf("job %s frame %d: write video: %v", job.ID, frame.frameIdx, err)
+				}
+
+				var b64Frame string
+				if p.hub.HasSubscribers(job.ID) {
+					wsBytes, err := video.EncodeJPEG(annotated, 75)
+					if err == nil {
+						b64Frame = base64.StdEncoding.EncodeToString(wsBytes)
+					}
+				}
+				annotated.Close()
+				frame.mat.Close()
+
+				p.hub.SendToJob(job.ID, ws.Message{
+					Type:           "frame",
+					JobID:          job.ID,
+					FrameIndex:     frame.frameIdx,
+					Timestamp:      time.Now().Format("15:04:05"),
+					AnnotatedFrame: b64Frame,
+					Detections:     analysisDets,
+					Metrics: map[string]interface{}{
+						"near_miss":      metrics.NearMiss,
+						"exposure":       metrics.Exposure,
+						"zone_violation": metrics.ZoneViolation,
+						"ppe_compliance": metrics.PPECompliant,
+						"inference_ms":   result.InferenceMs,
+					},
+				})
+
+				frameIdxCounter = frame.frameIdx + 1
 			}
 		}
+	}()
 
-		metrics := analysis.AnalyzeFrame(analysisDets, job.Zones, cap.Width, cap.Height)
-
-		annotated := mat.Clone()
-		video.DrawDetections(&annotated, analysisDets, job.Zones, cap.Width, cap.Height)
-
-		if err := writer.Write(annotated); err != nil {
-			log.Printf("job %s frame %d: write video: %v", job.ID, frameIdx, err)
-		}
-
-		var b64Frame string
-		if p.hub.HasSubscribers(job.ID) {
-			wsBytes, err := video.EncodeJPEG(annotated, 75)
-			if err == nil {
-				b64Frame = base64.StdEncoding.EncodeToString(wsBytes)
-			}
-		}
-		annotated.Close()
-
-		p.hub.SendToJob(job.ID, ws.Message{
-			Type:           "frame",
-			JobID:          job.ID,
-			FrameIndex:     frameIdx,
-			Timestamp:      time.Now().Format("15:04:05"),
-			AnnotatedFrame: b64Frame,
-			Detections:     analysisDets,
-			Metrics: map[string]interface{}{
-				"near_miss":      metrics.NearMiss,
-				"exposure":       metrics.Exposure,
-				"zone_violation": metrics.ZoneViolation,
-				"ppe_compliance": metrics.PPECompliant,
-				"inference_ms":   inferMs,
-			},
-		})
-
-		frameIdx++
-	}
-
-	writer.Close()
+	// Wait for both sender and receiver to complete
+	wg.Wait()
 
 	processedURL := ""
-	if frameIdx > 0 {
+	if frameIdxCounter > 0 {
 		processedURL = "/processed_videos/" + filepath.Base(outPath)
 	}
 
@@ -233,9 +318,9 @@ startProcessing:
 		Type:         "complete",
 		JobID:        job.ID,
 		ProcessedURL: processedURL,
-		TotalFrames:  frameIdx,
+		TotalFrames:  frameIdxCounter,
 	})
 
 	job.Status = "completed"
-	log.Printf("job %s: completed (%d frames)", job.ID, frameIdx)
+	log.Printf("job %s: completed (%d frames)", job.ID, frameIdxCounter)
 }
